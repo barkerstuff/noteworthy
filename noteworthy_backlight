@@ -24,7 +24,7 @@ args = parser.parse_args()
 
 # Checks for the existance of the icon file 
 if not path.exists(args.notification_icon) and not args.disable_notifications:
-    args.disable_notifications = True
+    print('WARNING: Notification icon {0} does not exist.'.format(args.notification_icon))
 
 def main():
 
