@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+
+import subprocess
+from sys import exit
+import argparse
+import shutil
+import re
+
+# Basic variables
+audiosystem_list=['pulse','alsa','jack']
+notification_system_list=['notify-osd','osdcat']
+notify_icon_file = '/opt/bin/usedicons/headphones.svg'
+notify_icon_file_muted = '/opt/bin/usedicons/headphones-mute.svg'
+
+# Set up parser
+parser = argparse.ArgumentParser()
+required_group = parser.add_mutually_exclusive_group(required=True)
+
+parser.set_defaults(notify_icon='/opt/bin/usedicons/headphones.svg',notify_icon_file_muted='/opt/bin/usedicons/headphones-mute.svg',notification_system='notify-osd',
+                    audio_system='None',increase_volume=False,decrease_volume=False,volume_increment=2,sink_number='None')
+parser.add_argument('-a','--audio_system',type=str,help='Selects the audio system from which to determine mute and volume values.  \
+                    Valid options are {}. By default will try and automatically determine the system'.format(audiosystem_list))
+parser.add_argument('-n','--notification_system',type=str,help='Selects the notification system to be used.  Valid options are {}. \
+                    Defaults to \'notify-osd\''.format(notification_system_list))
+required_group.add_argument('-i','--increase_volume',action='store_true',help='Raise the volume.  Can be combined with the -v argument to specify the increment')
+required_group.add_argument('-d','--decrease_volume',action='store_true',help='Lower the volume.  Can be combined with the -v argument to specify the increment')
+required_group.add_argument('-m','--toggle_mute',action='store_true',help='Toggles the mute status on and off')
+parser.add_argument('-v','--volume_increment',type=int,help='Specifies the increment by which to raise or lower the volume')
+parser.add_argument('-s','--sink_number',help='Sets the sink number to work on')
+parser.add_argument('-z','--disable_notifications',action='store_true',help='Disables notifications')
+args = parser.parse_args()
+
+# Catch invalid args
+exit('Invalid notification system {} selected. Exiting.'.format(args.notification_system)) if args.notification_system not in notification_system_list else print('Using {0} for notifications'.format(args.notification_system))
+print('No valid audio system selected.  Will automatically determine'.format(args.audio_system)) if args.audio_system not in audiosystem_list else print('',end='')
+
+def main():
+
+    # Determine the appropriate audio system if none specified
+    if args.audio_system == 'None':
+        determine_audio_system()
+
+    # Increase the volume is specified as an argument
+    if args.increase_volume and args.audio_system == 'pulse':
+        set_volume_pulse()
+    elif args.increase_volume and args.audio_system == 'alsa':
+        set_volume_alsa()
+    elif args.increase_volume and args.audio_system == 'jack':
+        set_volume_jack()
+    
+    # Decrease the volume is specified as an argument
+    if args.decrease_volume and args.audio_system == 'pulse':
+        set_volume_pulse()
+    elif args.decrease_volume and args.audio_system == 'alsa':
+        set_volume_alsa()
+    elif args.decrease_volume and args.audio_system == 'jack':
+        set_volume_jack()
+    
+    # Gets mute status and sink volumes
+    def get_status():
+        if args.audio_system == 'pulse':
+            mute_status, volume = get_sink_status_pulse()
+        elif args.audio_system == 'alsa':
+            mute_status, volume = get_sink_status_alsa()
+        elif args.audio_system == 'jack':
+            mute_status, volume = get_sink_status_jack()
+        return mute_status, volume
+
+    mute_status, volume = get_status()
+    print('Mute status: {0}'.format(mute_status))
+    print('Volume: {0}'.format(volume)) 
+
+    # Toggles mute 
+    if args.toggle_mute:
+        toggle_mute(mute_status)
+        mute_status, volume = get_status()
+
+    # Notifies on mute status / sink volume
+    if not args.disable_notifications:
+        notify_user(mute_status, volume)
+
+
+# Determine which audio system we are using
+def determine_audio_system():
+    if shutil.which('pamixer'):
+        args.audio_system = 'pulse'
+        print('Pulseaudio detected')
+    elif shutil.which('amixer'):
+        args.audio_system = 'alsa'
+        print('ALSA detected')
+    else:
+        exit('No audio system could be automatically determined.  Please set this manually')
+
+
+def set_volume_pulse():
+    # Sets the subprocess list according based on whether the -d or -i flag was passed.  If sink value also passed then add this to the subprocess call
+    if args.increase_volume:
+        print('Increasing volume')
+        subprocess_list = ['pamixer','-i',str(args.volume_increment)]
+    elif args.decrease_volume:
+        print('Decreasing volume')
+        subprocess_list = ['pamixer','-d',str(args.volume_increment)]
+    subprocess.extend(['--sink',args.sink_number]) if isinstance(args.sink_number,int) else print('',end='')
+    
+    try:
+        subprocess.call(subprocess_list,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as E:
+        raise CalledProcessError from E
+
+def get_sink_status_pulse(): 
+
+    # Determine the mute status
+    subprocess_list = ['pamixer','--get-mute']
+    subprocess_list.extend(['--sink',args.sink_number]) if isinstance(args.sink_number,int) else print('',end='')
+    try:
+        mute_status = subprocess.check_output(subprocess_list).decode('utf-8').rstrip()
+    except Exception as E:
+        mute_status = E.output.decode('utf-8')
+
+    # Determine the volume status
+    subprocess_list = ['pamixer','--get-volume']
+    subprocess_list.extend(['--sink',args.sink_number]) if isinstance(args.sink_number,int) else print('',end='')
+    try:
+        volume = subprocess.check_output(subprocess_list).decode('utf-8').rstrip()
+    except:
+        print('Failure to get volume')
+
+    return mute_status,volume
+
+def get_sink_status_alsa():
+
+    # Get the volume status 
+    amixer_output = subprocess.check_output(['amixer','sget','Master']).decode('utf-8')
+
+    # Get the mute status
+    volume = re.findall(r'[0-9]{1,3}\%',amixer_output)[0]
+    if re.search(r'\[[0-9]{1,3}\%\][\s]+\[on\]|off\]',amixer_output)[0]:
+        mute_status = 'true'
+    else:
+        mute_status = 'false'
+
+    return mute_status,volume
+
+# Get the volume of the given sink
+def get_volume_jack():
+    pass
+
+def toggle_mute(mute_status):
+    if args.audio_system == 'pulse':
+        subprocess_list = ['pamixer','-t']
+        subprocess_list.extend(['--sink',args.sink_number]) if isinstance(args.sink_number,int) else print('',end='')
+    elif args.audio_system == 'alsa':
+        subprocess_list = ['amixer','sset','Master','togglemute']
+    
+    try:
+        subprocess.call(subprocess_list,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as E:
+        print('Subprocess failure', E)
+
+# Notify user
+def notify_user(mute_status, result):
+    print('Calling {0}'.format(args.notification_system))
+    if args.notification_system == 'osdcat':
+            string_to_call = 'echo ' + result + ' | ' + 'osd_cat ' + ' -c' + ' red ' + '-d '+ '3 ' + '-p ' + 'middle ' + '-l ' + '1 ' + '--age=0 ' + '-A ' + 'center ' + '-O8 ' + '-f ' + '\'-adobe-helvetica-bold-r-normal--34-240-100-100-p-182-iso8859-1\''
+            subprocess.call(string_to_call,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    if args.notification_system == 'notify-osd':
+        if 'false' in str(mute_status):
+            subprocess_string = 'notify-send -i ' + notify_icon_file + ' -h int:value:' + result +  ' -h string:x-canonical-private-synchronous:volume -u critical'
+        elif 'true' in str(mute_status):
+            subprocess_string = 'notify-osd; notify-send -i ' + notify_icon_file_muted +  ' "Muted" ' + result + ';sleep 1;killall notify-osd -u critical'
+        #print('sending_string: {0}'.format(subprocess_string))
+        subprocess.call(subprocess_string,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+
+if __name__ == '__main__':
+    main()
+
