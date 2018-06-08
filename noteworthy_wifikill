@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+
+import subprocess
+from sys import exit
+import argparse
+from shutil import which
+from os import path 
+
+# Basic variables
+notification_system_list=['notify-osd','osdcat']
+
+# Set up parser
+parser = argparse.ArgumentParser()
+required_group = parser.add_mutually_exclusive_group(required=True)
+
+parser.set_defaults(notification_icon='/opt/bin/usedicons/wifi.svg',notification_system='None')
+parser.add_argument('-n','--notification_system',type=str,help='Selects the notification system to be used.  Valid options are {}. Will try and automatically determine this if nothing is specified. Defaults to \'notify-osd\''.format(notification_system_list))
+parser.add_argument('-z','--disable_notifications',help='Disables notifications',action='store_true')
+required_group.add_argument('-t','--toggle_wifi',action='store_true',help='Toggles wifi using rfkill')
+parser.add_argument('--notification_icon',type=str,help='Sets the icon to display alongside the notification.  Only notify-osd supports this feature')
+args = parser.parse_args()
+
+# Checks for the existance of the icon file 
+if not path.exists(args.notification_icon) and not args.disable_notifications:
+    print('WARNING: Specified icon file {0} does not exist.'.format(args.notification_icon))
+
+def main():
+
+    # Determine the appropriate notification system if none specified
+    if args.notification_system == 'None':
+        determine_notification_system()
+    
+    # Gets current rfkill state
+    rfkill_state = get_rfkill_status()
+    print('old rfkill state: {0}'.format(rfkill_state)) 
+
+    set_rfkill(rfkill_state)
+    
+    # Gets the new state
+    rfkill_state = get_rfkill_status()
+    print('new rfkill state: {0}'.format(rfkill_state)) 
+
+
+    # Notifies the user of the change
+    notify_user(rfkill_state)
+
+
+# Determine which audio system we are using
+def determine_notification_system():
+    if which('notify-send'):
+        args.notification_system = 'notify-osd'
+        print('notify-osd detected')
+    elif which('osdcat'):
+        args.notification_system = 'osd_cat'
+        print('osdcat detected')
+    else:
+        exit('No audio system could be automatically determined.  Please ensure that one is installed')
+
+def set_rfkill(rfkill_state):
+    # Sets the subprocess list according based on whether the -d or -i flag was passed.  If sink value also passed then add this to the subprocess call
+    if rfkill_state == 'unblocked':
+        print('Toggling wifi off')
+        subprocess_list = ['rfkill','block','wifi']
+    if rfkill_state == 'blocked':
+        print('Toggling wifi on')
+        subprocess_list = ['rfkill','unblock','wifi']
+    
+    try:
+        subprocess.call(subprocess_list)
+    except subprocess.CalledProcessError as E:
+        raise CalledProcessError from E
+
+def get_rfkill_status(): 
+
+    # Determine the backlight level
+    subprocess_list = ['rfkill','list','wifi']
+    try:
+        output = subprocess.check_output(subprocess_list).decode('utf-8').rstrip()
+        if 'blocked: yes' in output:
+            rfkill_state = 'blocked'
+        else:
+            rfkill_state = 'unblocked'
+
+    except subprocess.CalledProcessError as E:
+        sys.exit('Could not determine the rfkill status',E)
+    return rfkill_state
+
+# Notify user
+def notify_user(rfkill_state):
+    print('Calling {0}'.format(args.notification_system))
+    if args.notification_system == 'osdcat':
+            string_to_call = 'echo ' + str(rfkill_state) + ' | ' + 'osd_cat ' + ' -c' + ' red ' + '-d '+ '3 ' + '-p ' + 'middle ' + '-l ' + '1 ' + '--age=0 ' + '-A ' + 'center ' + '-O8 ' + '-f ' + '\'-adobe-helvetica-bold-r-normal--34-240-100-100-p-182-iso8859-1\''
+            subprocess.call(string_to_call,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    if args.notification_system == 'notify-osd':
+        if rfkill_state == 'unblocked':
+            subprocess_list = ['notify-send','-u','critical','-i',args.notification_icon,'WiFi enabled']
+            subprocess.call(subprocess_list,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        if rfkill_state == 'blocked':
+            subprocess_list = ['notify-send','-u','critical','-i',args.notification_icon,'WiFi disabled']
+            subprocess.call(subprocess_list,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+
+if __name__ == '__main__':
+    main()
+

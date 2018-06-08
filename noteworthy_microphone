@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+
+import subprocess
+from sys import exit
+import argparse
+from shutil import which
+import re
+from os import path 
+
+# Basic variables
+audiosystem_list=['pulse','alsa','jack']
+notification_system_list=['notify-osd','osd_cat']
+
+# Set up parser
+parser = argparse.ArgumentParser()
+parser.set_defaults(notify_icon_file='/opt/bin/usedicons/microphone.svg',notify_icon_file_muted='/opt/bin/usedicons/microphone-slash.svg',notification_system='notify-osd',
+                    audio_system='None',sink_number='None')
+parser.add_argument('-a','--audio_system',type=str,help='Selects the audio system from which to determine mute and volume values.  \
+                    Valid options are {}. By default will try and automatically determine the system'.format(audiosystem_list))
+parser.add_argument('-n','--notification_system',type=str,help='Selects the notification system to be used.  Valid options are {}. \
+                    Defaults to \'notify-osd\''.format(notification_system_list))
+parser.add_argument('-m','--toggle_mute',action='store_true',help='Toggles the mute status on and off',required=True)
+parser.add_argument('-s','--sink_number',help='Sets the sink number to work on')
+parser.add_argument('-z','--disable_notifications',action='store_true',help='Disables notifications')
+parser.add_argument('--notification_icon',type=str,help='Specifies an icon to use for the notification')
+args = parser.parse_args()
+
+# Catch invalid args
+exit('Invalid notification system {} selected. Exiting.'.format(args.notification_system)) if args.notification_system not in notification_system_list else print('Using {0} for notifications'.format(args.notification_system))
+print('No valid audio system selected.  Will automatically determine'.format(args.audio_system)) if args.audio_system not in audiosystem_list else print('',end='')
+
+def main():
+
+    # Determine the appropriate audio system if none specified
+    if args.audio_system == 'None':
+        determine_audio_system()
+
+    # Gets mute status and sink volumes
+    def get_status():
+        if args.audio_system == 'pulse':
+            mute_status, volume = get_source_status_pulse()
+        elif args.audio_system == 'alsa':
+            mute_status, volume = get_source_status_alsa()
+        elif args.audio_system == 'jack':
+            mute_status, volume = get_source_status_jack()
+        return mute_status, volume
+
+    mute_status, volume = get_status()
+    print('Mute status: {0}'.format(mute_status))
+    print('Volume: {0}'.format(volume)) 
+
+    # Toggles mute 
+    if args.toggle_mute:
+        toggle_mute(mute_status)
+        mute_status, volume = get_status()
+
+    # Notifies on mute status / sink volume
+    if not args.disable_notifications:
+        notify_user(mute_status, volume)
+
+# Attempt to determine which notification system should be used when unspecified
+def determine_notification_system():
+    if which('notify-osd'):
+        args.notification_system = 'notify-osd'
+        print('notifyosd detected')
+    elif which('osd_cat'):
+        args.notification_system = 'osd_cat'
+        print('osd_cat detected')
+    else:
+        exit('No notification system could be automatically determined.  Please set this manually')
+
+
+# Attempt to etermine which audio system is in use when not specified by the user
+def determine_audio_system():
+    if which('pamixer'):
+        args.audio_system = 'pulse'
+        print('Pulseaudio detected')
+    elif which('amixer'):
+        args.audio_system = 'alsa'
+        print('ALSA detected')
+    else:
+        exit('No audio system could be automatically determined.  Please set this manually')
+
+def get_source_status_pulse(): 
+
+    # Determine the mute status
+    subprocess_list = ['pamixer','--get-mute']
+    subprocess_list.extend(['--sink',args.sink_number]) if isinstance(args.sink_number,int) else print('',end='')
+    try:
+        mute_status = subprocess.check_output(subprocess_list).decode('utf-8').rstrip()
+    except Exception as E:
+        mute_status = E.output.decode('utf-8')
+
+    # Determine the volume status
+    subprocess_list = ['pamixer','--get-volume']
+    subprocess_list.extend(['--sink',args.sink_number]) if isinstance(args.sink_number,int) else print('',end='')
+    try:
+        volume = subprocess.check_output(subprocess_list).decode('utf-8').rstrip()
+    except:
+        print('Failure to get volume')
+
+    return mute_status,volume
+
+def get_source_status_alsa():
+
+    # Get the volume status 
+    amixer_output = subprocess.check_output(['amixer','sget','Capture']).decode('utf-8')
+
+    # Get the mute status
+    volume = re.findall(r'[0-9]{1,3}\%',amixer_output)[0]
+    if re.search(r'off',amixer_output):
+        mute_status = 'true'
+    else:
+        mute_status = 'false'
+    return mute_status,volume
+
+def toggle_mute(mute_status):
+    if args.audio_system == 'pulse':
+        subprocess_list = ['pamixer','-t']
+        subprocess_list.extend(['--sink',args.sink_number]) if isinstance(args.sink_number,int) else print('',end='')
+    elif args.audio_system == 'alsa':
+        subprocess_list = ['amixer','sset','Capture','togglemute']
+    
+    try:
+        subprocess.call(subprocess_list,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as E:
+        print('Subprocess failure', E)
+
+# Notify user
+def notify_user(mute_status, volume):
+    print('Calling {0}'.format(args.notification_system))
+    if args.notification_system == 'osd_cat':
+            string_to_call = 'echo ' + mute_status + ' | ' + 'osd_cat ' + ' -c' + ' red ' + '-d '+ '3 ' + '-p ' + 'middle ' + '-l ' + '1 ' + '--age=0 ' + '-A ' + 'center ' + '-O8 ' + '-f ' + '\'-adobe-helvetica-bold-r-normal--34-240-100-100-p-182-iso8859-1\''
+            subprocess.call(string_to_call,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    if args.notification_system == 'notify-osd':
+        if 'false' in str(mute_status):
+            subprocess_string = 'notify-send -u critical -i ' + args.notify_icon_file + ' -h int:value:' + volume +  ' -h string:x-canonical-private-synchronous:volume "None"'
+        elif 'true' in str(mute_status):
+            subprocess_string = 'notify-send -u critical -i ' + args.notify_icon_file_muted + ' -h int:value:' + volume +  ' -h string:x-canonical-private-synchronous:volume "None"'        
+        print('sending_string: {0}'.format(subprocess_string))
+        subprocess.call(subprocess_string,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+
+if __name__ == '__main__':
+    main()
+
