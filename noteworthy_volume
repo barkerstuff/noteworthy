@@ -165,10 +165,10 @@ def notify_user(mute_status, result):
             subprocess.call(string_to_call,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     if args.notification_system == 'notify-osd':
         if 'false' in str(mute_status):
-            subprocess_string = 'notify-send -i ' + notify_icon_file + ' -h int:value:' + result +  ' -h string:x-canonical-private-synchronous:volume -u critical'
+            subprocess_string = 'notify-send -u critical -i ' + notify_icon_file + ' -h int:value:' + result +  ' -h string:x-canonical-private-synchronous:volume "None"'
         elif 'true' in str(mute_status):
-            subprocess_string = 'notify-osd; notify-send -i ' + notify_icon_file_muted +  ' "Muted" ' + result + ';sleep 1;killall notify-osd -u critical'
-        #print('sending_string: {0}'.format(subprocess_string))
+            subprocess_string = 'notify-send -u critical -i ' + notify_icon_file_muted +  ' "Muted" ' + result + ';sleep 1;killall notify-osd'
+        print('sending_string: {0}'.format(subprocess_string))
         subprocess.call(subprocess_string,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
 
 if __name__ == '__main__':
