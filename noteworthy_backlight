@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+
+import subprocess
+from sys import exit
+import argparse
+from shutil import which
+from os import path 
+
+# Basic variables
+notification_system_list=['notify-osd','osdcat']
+
+# Set up parser
+parser = argparse.ArgumentParser()
+required_group = parser.add_mutually_exclusive_group(required=True)
+
+parser.set_defaults(notification_icon='/opt/bin/usedicons/sun-o.svg',notification_system='None',increase_backlight=False,decrease_backlight=False,backlight_increment=10)
+parser.add_argument('-v','--value_increment',type=int,help='Sets the value to increment or deincrement the brightnes by')
+parser.add_argument('-n','--notification_system',type=str,help='Selects the notification system to be used.  Valid options are {}. Will try and automatically determine this if nothing is specified. Defaults to \'notify-osd\''.format(notification_system_list))
+parser.add_argument('-z','--disable_notifications',help='Disables notifications',action='store_true')
+required_group.add_argument('-i','--increase_backlight',action='store_true',help='Raise the brightness.  Can be combined with the -v argument to specify the increment')
+required_group.add_argument('-d','--decrease_backlight',action='store_true',help='Lower the brightness.  Can be combined with the -v argument to specify the increment')
+parser.add_argument('--notification_icon',type=str,help='Sets the icon to display alongside the notification.  Only notify-osd supports this feature')
+args = parser.parse_args()
+
+# Checks for the existance of the icon file 
+if not path.exists(args.notification_icon) and not args.disable_notifications:
+    args.disable_notifications = True
+
+def main():
+
+    # Determine the appropriate notification system if none specified
+    if args.notification_system == 'None':
+        determine_notification_system()
+
+    set_backlight()
+
+    # Gets current brightness state
+    backlight_level = get_backlight_status()
+    print('Backlight level: {0}'.format(backlight_level)) 
+
+    # Notifies on brightness
+    if not args.disable_notifications:
+        notify_user(backlight_level)
+
+
+# Determine which audio system we are using
+def determine_notification_system():
+    if which('notify-send'):
+        args.notification_system = 'notify-osd'
+        print('notify-osd detected')
+    elif which('osdcat'):
+        args.notification_system = 'osd_cat'
+        print('osdcat detected')
+    else:
+        exit('No audio system could be automatically determined.  Please ensure that one is installed')
+
+def set_backlight():
+    # Sets the subprocess list according based on whether the -d or -i flag was passed.  If sink value also passed then add this to the subprocess call
+    if args.increase_backlight:
+        print('Increasing backlight')
+        subprocess_list = ['xbacklight','-inc',str(args.backlight_increment)]
+    elif args.decrease_backlight:
+        print('Decreasing backlight')
+        subprocess_list = ['xbacklight','-dec',str(args.backlight_increment)]
+    
+    try:
+        subprocess.call(subprocess_list,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as E:
+        raise CalledProcessError from E
+
+def get_backlight_status(): 
+
+    # Determine the backlight level
+    subprocess_list = ['xbacklight','-get']
+    try:
+        backlight_level = subprocess.check_output(subprocess_list).decode('utf-8').rstrip()
+    except subprocess.CalledProcessError as E:
+        sys.exit('Could not determine the backlight level',E)
+
+    return backlight_level
+
+# Notify user
+def notify_user(backlight_level):
+    print('Calling {0}'.format(args.notification_system))
+    if args.notification_system == 'osdcat':
+            string_to_call = 'echo ' + str(backlight_level) + ' | ' + 'osd_cat ' + ' -c' + ' red ' + '-d '+ '3 ' + '-p ' + 'middle ' + '-l ' + '1 ' + '--age=0 ' + '-A ' + 'center ' + '-O8 ' + '-f ' + '\'-adobe-helvetica-bold-r-normal--34-240-100-100-p-182-iso8859-1\''
+            subprocess.call(string_to_call,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    if args.notification_system == 'notify-osd':
+        subprocess_string = 'notify-send -u critical -i ' + args.notification_icon + ' -h int:value:' + str(backlight_level) +  ' -h string:x-canonical-private-synchronous:backlight "None"'
+        print('sending_string: {0}'.format(subprocess_string))
+        subprocess.call(subprocess_string,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+
+if __name__ == '__main__':
+    main()
+
