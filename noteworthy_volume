@@ -93,7 +93,9 @@ def determine_notification_system():
 
 # Attempt to etermine which audio system is in use when not specified by the user
 def determine_audio_system():
-    if which('pamixer'):
+    if which('pulseaudio') and not which('pamixer'):
+        exit('Pulseaudio is installed but pamixer is not.  Please install this')
+    elif which('pamixer'):
         args.audio_system = 'pulse'
         print('Pulseaudio detected')
     elif which('amixer'):
